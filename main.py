@@ -1,110 +1,199 @@
-from fastapi import FastAPI, HTTPException, Path, Query
+from typing import List, Optional
+
+from fastapi import FastAPI, HTTPException, Depends
+from pydantic import BaseModel
+from sqlmodel import SQLModel, create_engine, Session, Field, Relationship
+
+
+# Define the SQLModel classes for User and Loan
+
+
+class User(SQLModel, table=True):
+    id: int = Field(default=None, primary_key=True)
+    username: str
+
+    loans: List["Loan"] = Relationship(back_populates="user")
+
+
+class Loan(SQLModel, table=True):
+    id: int = Field(default=None, primary_key=True)
+    amount: float
+    annual_interest_rate: float
+    loan_term: int
+
+    # Define a relationship to the User model
+    user_id: int = Field(foreign_key="user.id")
+    user: List[User] = Relationship(back_populates="loans")
+
+
+sqlite_file_name = "database.db"
+sqlite_url = f"sqlite:///{sqlite_file_name}"
+
+
+connect_args = {"check_same_thread": False}
+engine = create_engine(sqlite_url, echo=True, connect_args=connect_args)
+
+
+def get_session():
+    with Session(engine) as session:
+        yield session
+
+
+def create_db_and_tables():
+    SQLModel.metadata.create_all(engine)
+
 
 app = FastAPI()
 
-# In-memory storage for user and loan data
-users_db = []
-loans_db = []
+
+# Define the FastAPI models
+class UserCreate(BaseModel):
+    username: str
 
 
-class User:
-    def __init__(self, username: str):
-        self.username = username
+class LoanCreate(BaseModel):
+    user_id: int
+    amount: float
+    annual_interest_rate: float
+    loan_term: int
 
 
-class Loan:
-    def __init__(self, username: str, amount: float, annual_interest_rate: float, loan_term: int):
-        self.username = username
-        self.amount = amount
-        self.annual_interest_rate = annual_interest_rate
-        self.loan_term = loan_term
-        self.remaining_balance = amount
-        self.monthly_payment = self.calculate_monthly_payment()
-        self.payment_schedule = self.calculate_payment_schedule()
-
-    def calculate_monthly_payment(self):
-        monthly_interest_rate = self.annual_interest_rate / 12 / 100
-        return (self.amount * monthly_interest_rate) / (1 - (1 + monthly_interest_rate) ** -self.loan_term)
-
-    def calculate_payment_schedule(self):
-        schedule = []
-        for month in range(1, self.loan_term + 1):
-            interest_payment = self.remaining_balance * (self.annual_interest_rate / 12 / 100)
-            principal_payment = self.monthly_payment - interest_payment
-            self.remaining_balance -= principal_payment
-            schedule.append({
-                "Month": month,
-                "Remaining Balance": round(self.remaining_balance, 2),
-                "Monthly Payment": round(self.monthly_payment, 2)
-            })
-        return schedule
+class LoanSchedule(BaseModel):
+    month: int
+    remaining_balance: float
+    monthly_payment: float
 
 
-@app.post("/create_user/{username}")
-async def create_user(username: str):
-    new_user = User(username=username)
-    users_db.append(new_user)
-    return {"message": "User created successfully", "user": new_user.__dict__}
+class LoanSummary(BaseModel):
+    current_principal_balance: float
+    aggregate_principal_paid: float
+    aggregate_interest_paid: float
+
+
+# Define the FastAPI endpoints
+@app.on_event("startup")
+def on_startup():
+    create_db_and_tables()
+
+
+@app.post("/create_user")
+async def create_user(user_create: UserCreate, db: Session = Depends(get_session)):
+    user = User(**user_create.dict())
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return {"message": "User created successfully", "user": user}
 
 
 @app.post("/create_loan")
-async def create_loan(username: str, amount: float, annual_interest_rate: float, loan_term: int):
-    if username in users_db:
-        new_loan = Loan(username=username,
-                        amount=amount,
-                        annual_interest_rate=annual_interest_rate,
-                        loan_term=loan_term)
-        loans_db.append(new_loan)
-        return {"message": "Loan created successfully", "loan": new_loan.__dict__}
-    else:
-        raise HTTPException(status_code=400, detail="Username not found")
+async def create_loan(loan_create: LoanCreate, db: Session = Depends(get_session)):
+    loan = Loan(**loan_create.dict())
+    db.add(loan)
+    db.commit()
+    db.refresh(loan)
+    return {"message": "Loan created successfully", "loan": loan}
 
 
-@app.get("/loan_schedule/{loan_id}")
-async def loan_schedule(loan_id: int = Path(..., title="The ID of the loan", gt=0, description="Loan ID")):
-    try:
-        loan = loans_db[loan_id - 1]
-        return {"message": "Loan schedule fetched successfully", "loan_schedule": loan.payment_schedule}
-    except IndexError:
+def calculate_monthly_payment(amount: float, annual_interest_rate: float, loan_term: int) -> float:
+    monthly_interest_rate = annual_interest_rate / 12 / 100
+    return (amount * monthly_interest_rate) / (1 - (1 + monthly_interest_rate) ** -loan_term)
+
+
+def calculate_loan_schedule(amount: float, annual_interest_rate: float, loan_term: int) -> List[LoanSchedule]:
+    schedules = []
+    remaining_balance = amount
+    monthly_interest_rate = annual_interest_rate / 12 / 100
+    monthly_payment = calculate_monthly_payment(amount, annual_interest_rate, loan_term)
+
+    for month in range(1, loan_term + 1):
+        interest_payment = remaining_balance * monthly_interest_rate
+        principal_payment = monthly_payment - interest_payment
+        remaining_balance -= principal_payment
+
+        cur_schedule = LoanSchedule(
+            month=month,
+            remaining_balance=round(remaining_balance, 2),
+            monthly_payment=round(monthly_payment, 2),
+        )
+        schedules.append(cur_schedule)
+
+    return schedules
+
+
+@app.get("/loan/{loan_id}/schedule")
+async def loan_schedule(loan_id: int, db: Session = Depends(get_session)):
+    loan = db.get(Loan, loan_id)
+    if not loan:
         raise HTTPException(status_code=404, detail="Loan not found")
 
+    schedule = calculate_loan_schedule(loan.amount, loan.annual_interest_rate, loan.loan_term)
+    return {"message": "Loan schedule fetched successfully", "loan_schedule": schedule}
 
-@app.get("/loan_summary/{loan_id}")
-async def loan_summary(loan_id: int = Path(..., title="The ID of the loan", gt=0, description="Loan ID"),
-                       month: int = Query(..., title="The month number", ge=1, description="Month number")):
-    try:
-        loan = loans_db[loan_id - 1]
-        if month > loan.loan_term:
-            raise HTTPException(status_code=400, detail="Invalid month number")
-        summary = loan.payment_schedule[month - 1]
-        return {"message": "Loan summary fetched successfully", "loan_summary": summary}
-    except IndexError:
+
+def calculate_loan_summary(amount: float, month_number: int, schedule: List[LoanSchedule]) -> LoanSummary:
+    current_principal_balance = schedule[month_number - 1].remaining_balance
+    total_paid = schedule[0].monthly_payment * month_number
+
+    aggregate_principal_paid = amount - current_principal_balance
+    aggregate_interest_paid = total_paid - aggregate_principal_paid
+
+    cur_loan_summary = LoanSummary(
+        current_principal_balance=round(current_principal_balance, 2),
+        aggregate_principal_paid=round(aggregate_principal_paid, 2),
+        aggregate_interest_paid=round(aggregate_interest_paid, 2),
+    )
+
+    return cur_loan_summary
+
+
+@app.get("/loan/{loan_id}/summary")
+async def loan_summary(loan_id: int, month: int, db: Session = Depends(get_session)):
+    loan = db.get(Loan, loan_id)
+    if not loan:
         raise HTTPException(status_code=404, detail="Loan not found")
 
+    if month > loan.loan_term:
+        raise HTTPException(status_code=400, detail="Invalid month number")
 
-@app.get("/user_loans/{username}")
-async def user_loans(username: str):
-    user_loans_all = [loan.__dict__ for loan in loans_db if loan.username == username]
+    schedule = calculate_loan_schedule(loan.amount, loan.annual_interest_rate, loan.loan_term)
+    cur_loan_summary = calculate_loan_summary(loan.amount, month, schedule)
+    return {"message": "Loan summary fetched successfully", "loan_summary": cur_loan_summary}
+
+
+@app.get("/user/{user_id}/loans")
+async def user_loans(user_id: int, db: Session = Depends(get_session)):
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user_loans_all = db.query(Loan).filter(getattr(Loan, "user_id") == User.id).all()
     return {"message": "User loans fetched successfully", "user_loans": user_loans_all}
 
 
-@app.post("/share_loan/{loan_id}/{recipient_username}")
-async def share_loan(loan_id: int = Path(..., title="The ID of the loan", gt=0, description="Loan ID"),
-                     recipient_username: str = Path(..., title="The username of the recipient",
-                                                    description="Recipient Username")):
-    try:
-        loan = loans_db[loan_id - 1]
-        recipient_user = next((user for user in users_db if user.username == recipient_username), None)
-        if recipient_user is None:
-            raise HTTPException(status_code=404, detail="Recipient user not found")
-        new_loan = Loan(username=recipient_user.username,
-                        amount=loan.amount,
-                        annual_interest_rate=loan.annual_interest_rate,
-                        loan_term=loan.loan_term)
-        loans_db.append(new_loan)
-        return {"message": "Loan shared successfully", "shared_loan": new_loan.__dict__}
-    except IndexError:
+@app.post("/loan/{loan_id}/share/{recipient_user_id}")
+async def share_loan(loan_id: int, recipient_user_id: int, db: Session = Depends(get_session)):
+    loan = db.get(Loan, loan_id)
+    if not loan:
         raise HTTPException(status_code=404, detail="Loan not found")
+
+    recipient_user = db.get(User, recipient_user_id)
+    if not recipient_user:
+        raise HTTPException(status_code=404, detail="Recipient user not found")
+
+    if loan.user_id == recipient_user.id:
+        raise HTTPException(status_code=404, detail="Loan cannot be shared with the original owner")
+
+    new_loan = Loan(
+        user_id=recipient_user.id,
+        amount=loan.amount,
+        annual_interest_rate=loan.annual_interest_rate,
+        loan_term=loan.loan_term,
+    )
+    db.add(new_loan)
+    db.commit()
+    db.refresh(new_loan)
+
+    return {"message": "Loan shared successfully", "shared_loan": new_loan}
 
 
 if __name__ == "__main__":
