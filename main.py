@@ -1,4 +1,5 @@
-from typing import List, Optional
+from contextlib import asynccontextmanager
+from typing import List
 
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
@@ -43,7 +44,12 @@ def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
 
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    create_db_and_tables()
+    yield
+
+app = FastAPI(lifespan=lifespan)
 
 
 # Define the FastAPI models
@@ -71,9 +77,6 @@ class LoanSummary(BaseModel):
 
 
 # Define the FastAPI endpoints
-@app.on_event("startup")
-def on_startup():
-    create_db_and_tables()
 
 
 @app.post("/create_user")
@@ -88,6 +91,13 @@ async def create_user(user_create: UserCreate, db: Session = Depends(get_session
 @app.post("/create_loan")
 async def create_loan(loan_create: LoanCreate, db: Session = Depends(get_session)):
     loan = Loan(**loan_create.dict())
+    if loan.amount <= 0:
+        raise HTTPException(status_code=404, detail="Loan amount cannot be negative or zero")
+    if loan.loan_term <= 0:
+        raise HTTPException(status_code=404, detail="Loan term cannot be negative or zero")
+    if loan.amount <= 0:
+        raise HTTPException(status_code=404, detail="Loan amount cannot be negative or zero")
+
     db.add(loan)
     db.commit()
     db.refresh(loan)
@@ -112,8 +122,8 @@ def calculate_loan_schedule(amount: float, annual_interest_rate: float, loan_ter
 
         cur_schedule = LoanSchedule(
             month=month,
-            remaining_balance=round(remaining_balance, 2),
-            monthly_payment=round(monthly_payment, 2),
+            remaining_balance=remaining_balance,
+            monthly_payment=monthly_payment,
         )
         schedules.append(cur_schedule)
 
@@ -133,14 +143,15 @@ async def loan_schedule(loan_id: int, db: Session = Depends(get_session)):
 def calculate_loan_summary(amount: float, month_number: int, schedule: List[LoanSchedule]) -> LoanSummary:
     current_principal_balance = schedule[month_number - 1].remaining_balance
     total_paid = schedule[0].monthly_payment * month_number
+    print('total', total_paid)
 
     aggregate_principal_paid = amount - current_principal_balance
     aggregate_interest_paid = total_paid - aggregate_principal_paid
 
     cur_loan_summary = LoanSummary(
-        current_principal_balance=round(current_principal_balance, 2),
-        aggregate_principal_paid=round(aggregate_principal_paid, 2),
-        aggregate_interest_paid=round(aggregate_interest_paid, 2),
+        current_principal_balance=current_principal_balance,
+        aggregate_principal_paid=aggregate_principal_paid,
+        aggregate_interest_paid=aggregate_interest_paid,
     )
 
     return cur_loan_summary
