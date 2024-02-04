@@ -1,12 +1,10 @@
 from contextlib import asynccontextmanager
+from decimal import Decimal
 from typing import List
 
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
-from sqlmodel import SQLModel, create_engine, Session, Field, Relationship
-
-
-# Define the SQLModel classes for User and Loan
+from sqlmodel import SQLModel, create_engine, Session, select, Field, Relationship
 
 
 class User(SQLModel, table=True):
@@ -16,20 +14,8 @@ class User(SQLModel, table=True):
     loans: List["Loan"] = Relationship(back_populates="user")
 
 
-class Loan(SQLModel, table=True):
-    id: int = Field(default=None, primary_key=True)
-    amount: float
-    annual_interest_rate: float
-    loan_term: int
-
-    # Define a relationship to the User model
-    user_id: int = Field(foreign_key="user.id")
-    user: List[User] = Relationship(back_populates="loans")
-
-
 sqlite_file_name = "database.db"
 sqlite_url = f"sqlite:///{sqlite_file_name}"
-
 
 connect_args = {"check_same_thread": False}
 engine = create_engine(sqlite_url, echo=True, connect_args=connect_args)
@@ -49,32 +35,42 @@ async def lifespan(app: FastAPI):
     create_db_and_tables()
     yield
 
+
 app = FastAPI(lifespan=lifespan)
 
 
-# Define the FastAPI models
+class Loan(SQLModel, table=True):
+    id: int = Field(default=None, primary_key=True)
+    amount: Decimal = Field(default=0, max_digits=5, decimal_places=2)
+    annual_interest_rate: Decimal = Field(default=0, max_digits=5, decimal_places=4)
+    loan_term: int
+
+    # Define a relationship to the User model
+    user_id: int = Field(foreign_key="user.id")
+    user: List[User] = Relationship(back_populates="loans")
+
+
 class UserCreate(BaseModel):
     username: str
 
 
 class LoanCreate(BaseModel):
     user_id: int
-    amount: float
-    annual_interest_rate: float
+    amount: Decimal = Field(ge=1, decimal_places=2)
+    annual_interest_rate: Decimal = Field(gt=0, decimal_places=4)
     loan_term: int
 
 
 class LoanSchedule(BaseModel):
     month: int
-    remaining_balance: float
-    monthly_payment: float
+    remaining_balance: Decimal
+    monthly_payment: Decimal
 
 
 class LoanSummary(BaseModel):
-    current_principal_balance: float
-    aggregate_principal_paid: float
-    aggregate_interest_paid: float
-
+    current_principal_balance: Decimal
+    aggregate_principal_paid: Decimal
+    aggregate_interest_paid: Decimal
 
 # Define the FastAPI endpoints
 
@@ -104,15 +100,16 @@ async def create_loan(loan_create: LoanCreate, db: Session = Depends(get_session
     return {"message": "Loan created successfully", "loan": loan}
 
 
-def calculate_monthly_payment(amount: float, annual_interest_rate: float, loan_term: int) -> float:
-    monthly_interest_rate = annual_interest_rate / 12 / 100
-    return (amount * monthly_interest_rate) / (1 - (1 + monthly_interest_rate) ** -loan_term)
+def calculate_monthly_payment(amount: Decimal, annual_interest_rate: Decimal, loan_term: int) -> Decimal:
+    monthly_interest_rate = annual_interest_rate / Decimal(12) / Decimal(100)
+    monthly_payment = (amount * monthly_interest_rate) / (1 - (1 + monthly_interest_rate) ** -loan_term)
+    return monthly_payment
 
 
-def calculate_loan_schedule(amount: float, annual_interest_rate: float, loan_term: int) -> List[LoanSchedule]:
+def calculate_loan_schedule(amount: Decimal, annual_interest_rate: Decimal, loan_term: int) -> List[LoanSchedule]:
     schedules = []
     remaining_balance = amount
-    monthly_interest_rate = annual_interest_rate / 12 / 100
+    monthly_interest_rate = annual_interest_rate / Decimal(12) / Decimal(100)
     monthly_payment = calculate_monthly_payment(amount, annual_interest_rate, loan_term)
 
     for month in range(1, loan_term + 1):
@@ -140,7 +137,7 @@ async def loan_schedule(loan_id: int, db: Session = Depends(get_session)):
     return {"message": "Loan schedule fetched successfully", "loan_schedule": schedule}
 
 
-def calculate_loan_summary(amount: float, month_number: int, schedule: List[LoanSchedule]) -> LoanSummary:
+def calculate_loan_summary(amount: Decimal, month_number: int, schedule: List[LoanSchedule]) -> LoanSummary:
     current_principal_balance = schedule[month_number - 1].remaining_balance
     total_paid = schedule[0].monthly_payment * month_number
     print('total', total_paid)
@@ -177,7 +174,7 @@ async def user_loans(user_id: int, db: Session = Depends(get_session)):
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    user_loans_all = db.query(Loan).filter(getattr(Loan, "user_id") == User.id).all()
+    user_loans_all = db.exec(select(Loan).filter(getattr(Loan, "user_id") == User.id)).all()
     return {"message": "User loans fetched successfully", "user_loans": user_loans_all}
 
 

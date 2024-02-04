@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
@@ -135,45 +137,44 @@ def test_share_loan(client: TestClient):
 
 
 def test_calculate_monthly_payment():
-    amount = 10000.0
-    annual_interest_rate = 5.0
+    amount = Decimal("10000")
+    annual_interest_rate = Decimal("5")
     loan_term = 120
 
     monthly_payment = calculate_monthly_payment(amount, annual_interest_rate, loan_term)
 
-    assert round(monthly_payment, 2) == 106.07
+    assert round(monthly_payment, 2) == Decimal("106.07")
 
 
 def test_calculate_loan_schedule():
-    amount = 10000.0
-    annual_interest_rate = 5
+    amount = Decimal("10000")
+    annual_interest_rate = Decimal("5")
     loan_term = 120
 
     loan_schedule = calculate_loan_schedule(amount, annual_interest_rate, loan_term)
 
     assert len(loan_schedule) == loan_term
 
-    assert round(loan_schedule[0].monthly_payment, 2) == 106.07
-    assert round(loan_schedule[0].remaining_balance, 2) == 9935.6
+    assert round(loan_schedule[0].monthly_payment, 2) == Decimal("106.07")
+    assert round(loan_schedule[0].remaining_balance, 2) == Decimal("9935.6")
     assert loan_schedule[0].month == 1
 
-    assert round(loan_schedule[-1].monthly_payment, 2) == 106.07
-    assert round(loan_schedule[-1].remaining_balance, 2) == 0
+    assert round(loan_schedule[-1].monthly_payment, 2) == Decimal("106.07")
+    assert round(loan_schedule[-1].remaining_balance, 2) == Decimal("0")
     assert loan_schedule[-1].month == 120
 
 
 def test_calculate_loan_summary():
-    amount = 10000.0
-    annual_interest_rate = 5
+    amount = Decimal("10000")
+    annual_interest_rate = Decimal("5")
     loan_term = 120
-    month_number = 24
+    month_number = 12
 
     loan_schedule = calculate_loan_schedule(amount, annual_interest_rate, loan_term)
     loan_summary = calculate_loan_summary(
         schedule=loan_schedule, month_number=month_number, amount=amount
     )
 
-    # Perform assertions
-    assert round(loan_summary.current_principal_balance, 2) == 8378.06
-    assert round(loan_summary.aggregate_principal_paid, 2) == 1621.94
-    assert round(loan_summary.aggregate_interest_paid, 2) == 923.63
+    assert round(loan_summary.current_principal_balance, 2) == Decimal("9209.26")
+    assert round(loan_summary.aggregate_principal_paid, 2) == Decimal("790.74")
+    assert round(loan_summary.aggregate_interest_paid, 2) == Decimal("482.04")
