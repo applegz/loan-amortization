@@ -1,4 +1,4 @@
-# Greystone Labs - Loan Amortization app
+# Loan Amortization app
 
 This app allows clients to
 
