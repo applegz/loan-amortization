@@ -174,7 +174,7 @@ async def user_loans(user_id: int, db: Session = Depends(get_session)):
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    user_loans_all = db.exec(select(Loan).filter(getattr(Loan, "user_id") == User.id)).all()
+    user_loans_all = db.exec(select(Loan).filter(getattr(Loan, "user_id") == user.id)).all()
     return {"message": "User loans fetched successfully", "user_loans": user_loans_all}
 
 
